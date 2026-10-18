@@ -2,30 +2,43 @@ name: RM定例のSlack自動投稿
 
 on:
   schedule:
-    # 毎週 月曜(1)・木曜(4) の 13:07 JST (= 04:07 UTC) に投稿します
-    # 21:00開始の定例会よりだいぶ前倒しで、事前に議事録へアジェンダを書き込む時間を確保しています。
+    # 投稿そのものはSlackの「予約投稿」で行います(投稿時刻は下の POST_TIMES)。
+    # このcronは「予約を入れに行く時刻」で、毎日 3:07 / 9:07 / 15:07 / 21:07 JST に動きます。
+    # 毎回、7日先までの投稿をまとめて予約し、当番表の最新内容で予約を作り直すので、
+    # GitHub Actionsの実行が数時間遅れたり飛ばされたりしても、投稿時刻はずれません。
     # 分を0ではなく7にずらしているのは、GitHub側で毎時00分に実行が集中して遅延しやすいのを避けるためです。
-    #
-    # 変更したい場合はここを書き換えてください。cronはUTC(協定世界時)基準なので、
-    # 「JSTの時刻 - 9時間」がUTCの時刻になります。
-    #     書式: 分 時 * * 曜日(0=日,1=月,2=火,3=水,4=木,5=金,6=土。カンマ区切りで複数指定可)
-    - cron: '7 1,5,9 * * 1,4'
+    # cronはUTC(協定世界時)基準なので「JSTの時刻 - 9時間」で書きます。
+    - cron: '7 0,6,12,18 * * *'
   workflow_dispatch:
     inputs:
       dry_run:
-        description: 'dry run(チェックすると実際には投稿せず、内容だけログに出す)'
+        description: 'dry run(チェックすると実際には予約せず、内容だけログに出す)'
         type: boolean
         default: false
+
+# 同時に2つ実行されて二重に予約しないようにする
+concurrency:
+  group: rm-post
+  cancel-in-progress: false
 
 jobs:
   post:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '24'
       - run: npm install
+
+      # 予約・投稿済みの記録を前回の実行から引き継ぐ(二重投稿・投稿漏れの防止用)
+      - uses: actions/cache/restore@v6
+        with:
+          path: .rm-state
+          key: rm-state-${{ github.run_id }}
+          restore-keys: rm-state-
+
       - run: node post-rm-message.js
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
@@ -34,3 +47,11 @@ jobs:
           MEET_URL: ${{ secrets.MEET_URL }}
           SCHEDULE_CSV_URL: ${{ secrets.SCHEDULE_CSV_URL }}
           DRY_RUN: ${{ inputs.dry_run }}
+          POST_WEEKDAYS: '1,4'          # 投稿する曜日(JST。0=日,1=月,2=火,3=水,4=木,5=金,6=土)
+          POST_TIMES: '10:00,13:00'     # 投稿時刻(JST。カンマ区切りで複数可)
+
+      - uses: actions/cache/save@v6
+        if: always() && hashFiles('.rm-state/done.json') != ''
+        with:
+          path: .rm-state
+          key: rm-state-${{ github.run_id }}
